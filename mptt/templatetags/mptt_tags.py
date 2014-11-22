@@ -306,14 +306,22 @@ def cache_tree_children(queryset):
 
 
 class RecurseTreeNode(template.Node):
-    def __init__(self, template_nodes, queryset_var):
+    def __init__(self, template_nodes, queryset_var, limits):
         self.template_nodes = template_nodes
         self.queryset_var = queryset_var
+        self.limits = limits
+
+    def get_limit(self, context, level):
+        try:
+            return self.limits[level].resolve(context)
+        except KeyError:
+            return self.limits[-1]
 
     def _render_node(self, context, node):
         bits = []
         context.push()
-        for child in node.get_children():
+        limit = self.get_limit(context, node.get_level() + 1)  # get_level + 1 is shitty
+        for child in node.get_children()[:limit]:
             bits.append(self._render_node(context, child))
         context['node'] = node
         context['children'] = mark_safe(''.join(bits))
@@ -324,7 +332,9 @@ class RecurseTreeNode(template.Node):
     def render(self, context):
         queryset = self.queryset_var.resolve(context)
         roots = cache_tree_children(queryset)
-        bits = [self._render_node(context, node) for node in roots]
+        root_level = roots[0].get_level()
+        limit = self.get_limit(context, root_level)
+        bits = [self._render_node(context, node) for node in roots[:limit]]
         return ''.join(bits)
 
 
@@ -337,7 +347,7 @@ def recursetree(parser, token):
 
     Usage:
             <ul>
-                {% recursetree nodes %}
+                {% recursetree nodes [limit1 [limit2 ...]] %}
                     <li>
                         {{ node.name }}
                         {% if not node.is_leaf_node %}
@@ -350,12 +360,13 @@ def recursetree(parser, token):
             </ul>
     """
     bits = token.contents.split()
-    if len(bits) != 2:
+    if len(bits) < 2:
         raise template.TemplateSyntaxError(_('%s tag requires a queryset') % bits[0])
 
     queryset_var = template.Variable(bits[1])
+    limits = [template.Variable(bit) for bit in bits[2:]]
 
     template_nodes = parser.parse(('endrecursetree',))
     parser.delete_first_token()
 
-    return RecurseTreeNode(template_nodes, queryset_var)
+    return RecurseTreeNode(template_nodes, queryset_var, limits)
